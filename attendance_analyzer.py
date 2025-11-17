@@ -69,7 +69,7 @@ def calculate_daily_pay(weekday, hours_worked, hourly_rate):
     - باقي الأيام: 9 ساعات أساسية
     - أي ساعة زيادة بعد الدوام تُحسب بنفس معدل الساعة
     """
-    if weekday == 5:  # Saturday
+    if weekday == 5 or weekday == 6:
         base_hours = 7
         base_pay = 9 * hourly_rate  # 7 ساعات = 9 ساعات أجر
     else:  # Mon-Fri
