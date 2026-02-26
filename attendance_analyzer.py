@@ -7,12 +7,16 @@ from collections import defaultdict
 st.set_page_config(page_title="Attendance Analyzer", layout="wide")
 
 # ==================== Excel Parsing ====================
-def parse_excel(file, month):
+def parse_excel(file, month, year):
     workbook = pd.read_excel(file, sheet_name="Attendance Logs", header=None)
     rows = []
 
     for idx, row in workbook.iterrows():
         if str(row[9]).strip() == "Name":
+             # ✅ حماية من الخروج خارج عدد الصفوف
+            if idx + 3 >= len(workbook):
+             continue
+
             name = str(workbook.iloc[idx][11]).strip()
             nums = workbook.iloc[idx + 1]
             days = workbook.iloc[idx + 2]
@@ -48,7 +52,7 @@ def parse_excel(file, month):
                     time_list = re.findall(r"\d{1,2}:\d{2}", raw_times)
                     rows.append({
                         "EmployeeName": name,
-                        "Date": datetime(2026, month, day_int),
+                        "Date": datetime(year, month, day_int),
                         "Times": time_list,
                         "OriginalRawTime": raw_times
                     })
@@ -201,12 +205,17 @@ month = st.selectbox(
     index=6,
     format_func=lambda x: datetime(2025, x, 1).strftime('%B')
 )
-
+year = st.number_input(
+    "Select Year",
+    min_value=2026,
+    max_value=2050,
+    value=datetime.now().year
+)
 uploaded_file = st.file_uploader("Upload Attendance Excel (.xls or .xlsx)", type=["xls", "xlsx"])
 
 if uploaded_file:
     try:
-        records = parse_excel(uploaded_file, month)
+        records = parse_excel(uploaded_file, month, year)
         summaries = analyze_attendance(records)
         summaries = filter_zero_hour_employees(summaries)
 
