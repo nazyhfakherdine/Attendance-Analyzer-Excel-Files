@@ -6,88 +6,77 @@ from collections import defaultdict
 
 st.set_page_config(page_title="Attendance Analyzer", layout="wide")
 
+# ==================== Dialog Modal (Pop-up Notification) ====================
+@st.dialog("💰 Salary Calculation")
+def show_salary_dialog(emp_name, total_hours, hourly_rate, salary):
+    st.markdown(f"### 👤 Employee: **{emp_name}**")
+    st.markdown("---")
+    st.markdown(f"⏱️ **Total Hours:** `{total_hours} hrs`")
+    st.markdown(f"💵 **Hourly Rate:** `${hourly_rate:,.2f} / hr`")
+    st.markdown(f"### 🎯 **Total Salary:** `${salary:,.2f}`")
+    st.markdown("---")
+    if st.button("Close (X)", use_container_width=True):
+        st.rerun()
+
+
 # ==================== Excel Parsing ====================
-def parse_excel(file, month, year):
-    workbook = pd.read_excel(file, sheet_name="Attendance Logs", header=None)
+def _find_sheet_with_columns(file, required_cols=("Name", "Time")):
+    xls = pd.ExcelFile(file, engine="xlrd")
+    for sheet in xls.sheet_names:
+        df = xls.parse(sheet, nrows=5)
+        cols = {str(c).strip().lower() for c in df.columns}
+        if all(rc.lower() in cols for rc in required_cols):
+            return sheet
+    return xls.sheet_names[0]
+
+
+def parse_excel(file, start_date=None, end_date=None):
+    sheet = _find_sheet_with_columns(file)
+    df = pd.read_excel(file, sheet_name=sheet, engine="xlrd")
+    df.columns = [str(c).strip() for c in df.columns]
+
+    col_map = {c.lower(): c for c in df.columns}
+    if "name" not in col_map or "time" not in col_map:
+        raise ValueError(
+            f"Couldn't find 'Name' and 'Time' columns in sheet '{sheet}'. "
+            f"Found columns: {list(df.columns)}"
+        )
+    name_col = col_map["name"]
+    time_col = col_map["time"]
+
+    df["_ParsedTime"] = pd.to_datetime(df[time_col], errors="coerce")
+    df = df.dropna(subset=["_ParsedTime", name_col])
+    df[name_col] = df[name_col].astype(str).str.strip()
+    df = df[df[name_col] != ""]
+
+    df["_Date"] = df["_ParsedTime"].dt.date
+
+    if start_date and end_date:
+        df = df[(df["_Date"] >= start_date) & (df["_Date"] <= end_date)]
+
+    if df.empty:
+        return []
+
     rows = []
+    grouped = df.groupby([name_col, "_Date"])["_ParsedTime"]
+    for (name, day), times in grouped:
+        times_sorted = sorted(times.tolist())
+        time_strs = [t.strftime("%H:%M") for t in times_sorted]
+        rows.append({
+            "EmployeeName": name,
+            "Date": datetime(day.year, day.month, day.day),
+            "Times": time_strs,
+            "OriginalRawTime": ", ".join(time_strs)
+        })
 
-    for idx, row in workbook.iterrows():
-        if str(row[9]).strip() == "Name":
-             # ✅ حماية من الخروج خارج عدد الصفوف
-            if idx + 3 >= len(workbook):
-             continue
-
-            name = str(workbook.iloc[idx][11]).strip()
-            nums = workbook.iloc[idx + 1]
-            days = workbook.iloc[idx + 2]
-            times = workbook.iloc[idx + 3]
-
-            first_day_col = None
-            for col in range(len(workbook.columns)):
-                day_str = str(nums[col]).strip()
-                if day_str.isdigit() and (1 <= int(day_str) <= 31):
-                    first_day_col = col
-                    break
-
-            if first_day_col is None:
-                raise ValueError("Couldn't find the starting day column in the sheet.")
-
-            for col in range(first_day_col, len(workbook.columns)):
-                weekday = str(days[col]).strip()
-                day_str = str(nums[col]).strip()
-                raw_times = str(times[col]).strip()
-
-                if not re.match(r"Sun|Mon|Tue|Wed|Thu|Fri|Sat", weekday):
-                    continue
-                if not day_str.isdigit():
-                    continue
-                if not raw_times or raw_times.lower() == "nan":
-                    continue
-
-                try:
-                    day_int = int(day_str)
-                    if not (1 <= day_int <= 31):
-                        continue
-
-                    time_list = re.findall(r"\d{1,2}:\d{2}", raw_times)
-                    rows.append({
-                        "EmployeeName": name,
-                        "Date": datetime(year, month, day_int),
-                        "Times": time_list,
-                        "OriginalRawTime": raw_times
-                    })
-                except ValueError:
-                    continue
-
-    rows.sort(key=lambda x: x['Date'])
+    rows.sort(key=lambda x: x["Date"])
     return rows
+
 
 # ==================== Attendance Analysis ====================
 def filter_zero_hour_employees(summaries):
     return [summary for summary in summaries if summary["TotalHours"] > 0]
 
-def calculate_daily_pay(weekday, hours_worked, hourly_rate):
-    """
-    حساب الأجر حسب اليوم:
-    - السبت: 7 ساعات أساسية = أجر 9 ساعات أيام عادية
-    - باقي الأيام: 9 ساعات أساسية
-    - أي ساعة زيادة بعد الدوام تُحسب بنفس معدل الساعة
-    """
-    if weekday == 5 or weekday == 6:
-        base_hours = 7
-        base_pay = 9 * hourly_rate  # 7 ساعات = 9 ساعات أجر
-    else:  # Mon-Fri
-        base_hours = 9
-        base_pay = base_hours * hourly_rate
-
-    if hours_worked > base_hours:
-        overtime_hours = hours_worked - base_hours
-        overtime_pay = overtime_hours * hourly_rate
-        total_pay = base_pay + overtime_pay
-    else:
-        total_pay = (hours_worked / base_hours) * base_pay
-
-    return round(total_pay, 2)
 
 def analyze_attendance(records):
     grouped = defaultdict(list)
@@ -98,7 +87,6 @@ def analyze_attendance(records):
 
     for name, logs in grouped.items():
         logs.sort(key=lambda x: x['Date'])
-        total_hours = 0
         missing = []
         daily_details = []
 
@@ -129,7 +117,6 @@ def analyze_attendance(records):
                         if end < start:
                             end += timedelta(days=1)
                         duration = (end - start).total_seconds() / 3600
-                        total_hours += duration
 
                         daily_details.append({
                             "Date": current['Date'].strftime("%Y-%m-%d"),
@@ -157,7 +144,6 @@ def analyze_attendance(records):
                             if next_first_dt <= start_dt:
                                 next_first_dt += timedelta(days=1)
                             duration = (next_first_dt - start_dt).total_seconds() / 3600
-                            total_hours += duration
                             daily_details.append({
                                 "Date": current['Date'].strftime("%Y-%m-%d"),
                                 "Start": leftover_time,
@@ -178,110 +164,136 @@ def analyze_attendance(records):
 
             i += 1
 
-        seen = set()
-        unique_details = []
+        day_totals = defaultdict(float)
+        day_entries = defaultdict(list)
+
         for d in daily_details:
-            key = (d["Date"], d["Start"], d["End"])
-            if key not in seen:
-                seen.add(key)
-                unique_details.append(d)
+            day_totals[d["Date"]] += d["Duration"]
+            day_entries[d["Date"]].append(d)
+
+        unique_details = []
+        for date_str in sorted(day_totals.keys()):
+            total_day_hours = round(day_totals[date_str], 2)
+            overtime = round(max(0.0, total_day_hours - 9.0), 2)
+            
+            starts = [e["Start"] for e in day_entries[date_str]]
+            ends = [e["End"] for e in day_entries[date_str]]
+
+            unique_details.append({
+                "Date": date_str,
+                "Start": starts[0],
+                "End": ends[-1],
+                "Duration": total_day_hours,
+                "Overtime": overtime
+            })
 
         total_hours = sum(d["Duration"] for d in unique_details)
+        total_overtime = sum(d["Overtime"] for d in unique_details)
+        total_normal = total_hours - total_overtime
+
         result.append({
             "EmployeeName": name,
             "TotalHours": round(total_hours, 2),
+            "TotalNormalHours": round(total_normal, 2),
+            "TotalOvertime": round(total_overtime, 2),
             "MissingCheckouts": missing,
             "DailyDetails": unique_details
         })
 
     return result
 
-# ==================== Streamlit UI ====================
+
+# ==================== Main Streamlit UI ====================
 st.title("🕒 Attendance Analyzer from Excel")
 
-month = st.selectbox(
-    "Select Month",
-    options=list(range(1, 13)),
-    index=6,
-    format_func=lambda x: datetime(2025, x, 1).strftime('%B')
-)
-year = st.number_input(
-    "Select Year",
-    min_value=2026,
-    max_value=2050,
-    value=datetime.now().year
-)
 uploaded_file = st.file_uploader("Upload Attendance Excel (.xls or .xlsx)", type=["xls", "xlsx"])
 
 if uploaded_file:
     try:
-        records = parse_excel(uploaded_file, month, year)
-        summaries = analyze_attendance(records)
-        summaries = filter_zero_hour_employees(summaries)
+        all_records = parse_excel(uploaded_file)
 
-        with st.container():
-            st.markdown("### 🔎 Employee Search")
-            search_name = st.text_input(
-                label="Search by Employee Name",
-                placeholder="Type a name to filter...",
-                label_visibility="collapsed"
-            ).strip().lower()
+        if not all_records:
+            st.warning("No attendance records found in this file.")
+        else:
+            all_dates = [r["Date"].date() for r in all_records]
+            min_date, max_date = min(all_dates), max(all_dates)
 
-        if search_name:
-            search_pattern = re.compile(re.escape(search_name), re.IGNORECASE)
-            summaries = [s for s in summaries if search_pattern.search(s["EmployeeName"])]
+            st.markdown("### 📅 Date Range Filter")
+            selected_range = st.date_input(
+                "Filter attendance records by date range:",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date
+            )
 
-        for summary in summaries:
-            st.subheader(summary["EmployeeName"])
+            if isinstance(selected_range, tuple) and len(selected_range) == 2:
+                start_date, end_date = selected_range
+            else:
+                start_date, end_date = min_date, max_date
 
-            # --- Hourly rate input + Apply button ---
-           # Hourly rate input + Apply button
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                hourly_rate = st.number_input(
-                    f"Hourly rate for {summary['EmployeeName']}",
-                    min_value=0.0, value=1.0, step=0.1, key=f"rate_{summary['EmployeeName']}"
-                )
-            with col2:
-                st.markdown(
-                    "<div style='display:flex; justify-content:center; align-items:center; height:100%; padding-top:10px;'>",
-                    unsafe_allow_html=True
-                )
-                apply_rate = st.button("Apply", key=f"apply_{summary['EmployeeName']}")
-                st.markdown("</div>", unsafe_allow_html=True)
+            records = parse_excel(uploaded_file, start_date=start_date, end_date=end_date)
+            summaries = analyze_attendance(records)
+            summaries = filter_zero_hour_employees(summaries)
 
+            with st.container():
+                st.markdown("### 🔎 Employee Search")
+                search_name = st.text_input(
+                    label="Search by Employee Name",
+                    placeholder="Type a name to filter...",
+                    label_visibility="collapsed"
+                ).strip().lower()
 
-            if summary.get("DailyDetails"):
-                daily_df = pd.DataFrame(summary["DailyDetails"])
-                # Add DayName column
-                daily_df["DayName"] = pd.to_datetime(daily_df["Date"]).dt.strftime("%a")
-                daily_df["Date"] = daily_df["Date"] + " (" + daily_df["DayName"] + ")"
-                daily_df.drop(columns=["DayName"], inplace=True)
+            if search_name:
+                search_pattern = re.compile(re.escape(search_name), re.IGNORECASE)
+                summaries = [s for s in summaries if search_pattern.search(s["EmployeeName"])]
 
-                # Calculate Pay only if Apply pressed
+            for summary in summaries:
+                emp_name = summary['EmployeeName']
+                st.subheader(f"👤 {emp_name}")
+
+                m_col1, m_col2, m_col3 = st.columns(3)
+                m_col1.metric(label="Total Hours", value=f"{summary['TotalHours']} hrs")
+                m_col2.metric(label="Total Normal Hours", value=f"{summary['TotalNormalHours']} hrs")
+                m_col3.metric(label="Total Overtime", value=f"{summary['TotalOvertime']} hrs")
+
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    hourly_rate = st.number_input(
+                        f"Hourly rate ($/hr) for {emp_name}",
+                        min_value=0.0, value=1.0, step=0.5, key=f"rate_{emp_name}"
+                    )
+                with col2:
+                    st.markdown(
+                        "<div style='display:flex; justify-content:center; align-items:center; height:100%; padding-top:10px;'>",
+                        unsafe_allow_html=True
+                    )
+                    apply_rate = st.button("Apply", key=f"apply_{emp_name}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # عند الضغط على Apply: تظهر النشرة/النافذة المنبثقة المربعة بالنصف
                 if apply_rate:
-                    pays = []
-                    for i, row in daily_df.iterrows():
-                        weekday = datetime.strptime(row["Date"][:10], "%Y-%m-%d").weekday()
-                        pay = calculate_daily_pay(weekday, row["Duration"], hourly_rate)
-                        pays.append(pay)
-                    daily_df["Pay"] = pays
-                    total_salary = sum(pays)
-                else:
-                    daily_df["Pay"] = ""
-                    total_salary = 0
+                    calculated_salary = round(summary['TotalHours'] * hourly_rate, 2)
+                    show_salary_dialog(emp_name, summary['TotalHours'], hourly_rate, calculated_salary)
 
-                with st.expander("📅 Daily Breakdown"):
-                    st.dataframe(daily_df)
-                    if apply_rate:
-                        st.markdown(f"**Total Salary:** ${round(total_salary,2)}")
+                if summary.get("DailyDetails"):
+                    daily_df = pd.DataFrame(summary["DailyDetails"])
+                    
+                    daily_df["DayName"] = pd.to_datetime(daily_df["Date"]).dt.strftime("%a")
+                    daily_df["Date"] = daily_df["Date"] + " (" + daily_df["DayName"] + ")"
+                    daily_df.drop(columns=["DayName"], inplace=True)
 
-            if summary.get("MissingCheckouts"):
-                with st.expander("⚠️ Missing Checkouts"):
-                    for miss in summary["MissingCheckouts"]:
-                        st.markdown(f"- {miss}")
+                    columns_order = ["Date", "Start", "End", "Duration", "Overtime"]
+                    daily_df = daily_df[columns_order]
 
-            st.markdown("---")
+                    with st.expander("📅 Daily Breakdown"):
+                        st.dataframe(daily_df, use_container_width=True)
+
+                if summary.get("MissingCheckouts"):
+                    with st.expander("⚠️ Missing Checkouts"):
+                        for miss in summary["MissingCheckouts"]:
+                            st.markdown(f"- {miss}")
+
+                st.markdown("---")
 
     except Exception as e:
         st.error(f"❌ Error parsing file: {e}")
