@@ -174,8 +174,24 @@ def analyze_attendance(records):
         unique_details = []
         for date_str in sorted(day_totals.keys()):
             total_day_hours = round(day_totals[date_str], 2)
-            overtime = round(max(0.0, total_day_hours - 9.0), 2)
             
+            # معرفة اليوم هل هو سبت أو أحد (5 = السبت، 6 = الأحد)
+            dt_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            is_weekend = dt_obj.weekday() in [5, 6]
+
+            if is_weekend:
+                # إذا اشتغل 7 ساعات أو أكتر بالسبت أو الأحد
+                if total_day_hours >= 7.0:
+                    overtime = round(total_day_hours - 7.0, 2)
+                    calculated_duration = round(9.0 + overtime, 2)
+                else:
+                    overtime = 0.0
+                    calculated_duration = total_day_hours
+            else:
+                # الأيام العادية (باقي أيام الأسبوع)
+                overtime = round(max(0.0, total_day_hours - 9.0), 2)
+                calculated_duration = total_day_hours
+
             starts = [e["Start"] for e in day_entries[date_str]]
             ends = [e["End"] for e in day_entries[date_str]]
 
@@ -183,7 +199,7 @@ def analyze_attendance(records):
                 "Date": date_str,
                 "Start": starts[0],
                 "End": ends[-1],
-                "Duration": total_day_hours,
+                "Duration": calculated_duration,
                 "Overtime": overtime
             })
 
@@ -270,7 +286,6 @@ if uploaded_file:
                     apply_rate = st.button("Apply", key=f"apply_{emp_name}")
                     st.markdown("</div>", unsafe_allow_html=True)
 
-                # عند الضغط على Apply: تظهر النشرة/النافذة المنبثقة المربعة بالنصف
                 if apply_rate:
                     calculated_salary = round(summary['TotalHours'] * hourly_rate, 2)
                     show_salary_dialog(emp_name, summary['TotalHours'], hourly_rate, calculated_salary)
